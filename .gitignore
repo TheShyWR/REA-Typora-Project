@@ -1,0 +1,14 @@
+# Generated dependencies, build products and local state
+node_modules/
+dist/
+build/
+release/
+.npm-cache/
+.DS_Store
+*.log
+.env
+.env.*
+*.pem
+# Historical analysis and acceptance artifacts stay outside the source repository.
+work/
+analysis/
