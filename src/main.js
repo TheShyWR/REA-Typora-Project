@@ -1,11 +1,14 @@
 import { Crepe } from '@milkdown/crepe';
 import { parserCtx, serializerCtx, editorViewCtx, remarkStringifyOptionsCtx } from '@milkdown/kit/core';
+import { createFileTree } from './file-tree.js';
 import { imageURL, imageMarkdown } from './images.js';
 import { importImageFiles } from './image-import.js';
 import { imageSchema } from '@milkdown/kit/preset/commonmark';
 import { focusDecorations } from './focus.js';
 import { markdownProtection } from './safety.js';
-import { Plugin } from '@milkdown/kit/prose/state';
+import { textMatches, documentMatches, replaceTextMatches, replaceDocumentMatches, searchKey, searchPlugin } from './search.js';
+import { closeHistory } from '@milkdown/kit/prose/history';
+import { Plugin, TextSelection } from '@milkdown/kit/prose/state';
 import { uploadConfig } from '@milkdown/kit/plugin/upload';
 import { $prose, $view, replaceAll } from '@milkdown/kit/utils';
 import '@milkdown/crepe/theme/common/style.css';
@@ -14,11 +17,14 @@ import './style.css';
 (async () => {
 const $ = id => document.getElementById(id);
 const api = window.desktop;
+const fileTree = createFileTree($('files'), { list: path => api.listFolder(path), open: path => action('open', path), report: text => { $('status').textContent = text; } });
 const protection = document.createElement('div');
 protection.id = 'protection'; protection.setAttribute('role', 'status');
 protection.style.cssText = 'padding:12px 20px;background:#fff0ce;color:#654300;font-size:13px;line-height:1.6';
 protection.hidden = true; $('editor').before(protection);
-let editorRaw, imageToken, importing = false, composing = false;
+let editorRaw, imageToken, importing = false, composing = false, sourceSearchIndex = 0;
+let documentRevision = 0;
+let currentPath, workspacePath, pendingFilesChange = false, checkingFiles = false;
 document.addEventListener('compositionstart', () => { composing = true; }, true);
 document.addEventListener('compositionend', () => { composing = false; }, true);
 let name = '未命名.md', raw = '# 开始写作\n\n让想法在这里生长。输入 **Markdown**，即时看到排版。\n\n## 一个安静的写作空间\n\n- 使用顶部按钮打开和保存文件\n- 输入 `/` 插入标题、表格或代码块\n- 在源码与排版视图之间自由切换\n\n> 好的文字，始于一个简单的念头。\n\n## 今天的计划\n\n- [ ] 记录灵感\n- [ ] 写下第一段\n- [ ] 整理成篇\n', saved = raw, sourceMode = false, loading = true, busy = false;
@@ -34,7 +40,7 @@ crepe.editor.config(ctx => ctx.update(uploadConfig.key, options => ({ ...options
   } catch (error) {
     $('status').textContent = error.message;
     return [];
-  } finally { importing = false; }
+  } finally { importing = false; if (pendingFilesChange) void checkFiles(); }
 } })));
 crepe.editor.use($prose(() => new Plugin({
   props: { decorations: state => document.body.classList.contains('focus') ? focusDecorations(state) : null },
@@ -57,10 +63,12 @@ crepe.editor.use($view(imageSchema.node, () => node => {
   update(node);
   return { dom, update };
 }));
+crepe.editor.use($prose(() => searchPlugin(renderSearch)));
 await crepe.create();
 editorRaw = raw;
 loading = false;
 function refresh() {
+  renderSearch();
   const dirty = raw !== saved;
   $('status').textContent = dirty ? '尚未保存' : '无未保存修改';
   $('title').textContent = name + (dirty ? ' •' : '');
@@ -97,9 +105,12 @@ function checkProtection() {
 function showMode() {
   $('source').hidden = !sourceMode; $('editor').hidden = sourceMode;
   $('mode').textContent = sourceMode ? '排版' : '源码';
+  syncSearch();
 }
 async function load(doc) {
   if (!doc) return;
+  documentRevision++; currentPath = doc.path; $('external-change').hidden = true;
+  fileTree.setActive(doc.path);
   loading = true; imageToken = doc.path ? doc.imageToken : undefined; raw = doc.text; saved = doc.savedText ?? doc.text; name = doc.name;
   const protectedSource = checkProtection();
   // Every newly opened document starts with a separate undo history.
@@ -129,7 +140,11 @@ async function toggleSource() {
   else crepe.editor.action(ctx => ctx.get(editorViewCtx).focus());
   return true;
 }
-$('source').addEventListener('input', () => { raw = $('source').value; refresh(); });
+function sourceText() {
+  const value = $('source').value;
+  return saved.includes('\r\n') && !saved.replace(/\r\n/g, '').includes('\n') ? value.replace(/\n/g, '\r\n') : value;
+}
+$('source').addEventListener('input', () => { raw = sourceText(); refresh(); });
 for (const kind of ['paste', 'drop']) $('source').addEventListener(kind, event => {
   const files = (event.clipboardData || event.dataTransfer)?.files;
   if (files?.length) {
@@ -140,7 +155,7 @@ for (const kind of ['paste', 'drop']) $('source').addEventListener(kind, event =
 async function action(kind, file) {
   if (importing) { $('status').textContent = '图片正在导入，请稍后再操作'; return; }
   if (busy) return;
-  if (composing && ['source', 'new', 'open', 'save', 'saveAs', 'pdf', 'image'].includes(kind)) {
+  if (composing && ['source', 'new', 'open', 'save', 'saveAs', 'pdf', 'image', 'find', 'findNext', 'findPrevious', 'replace', 'replaceOne', 'replaceAll', 'rename', 'reload'].includes(kind)) {
     $('status').textContent = '请先完成当前输入法候选字，再执行操作'; return;
   }
   busy = true;
@@ -153,15 +168,33 @@ async function action(kind, file) {
       crepe.editor.action(ctx => { const view = ctx.get(editorViewCtx); view.dispatch(view.state.tr); view.focus(); });
       $('status').textContent = document.body.classList.contains('focus') ? '段落专注已开启' : '段落专注已关闭';
     }
-    else if (kind === 'find') { $('findbar').hidden = !$('findbar').hidden; if (!$('findbar').hidden) $('query').focus(); else await api?.find(''); }
+    else if (kind === 'find' || kind === 'replace') {
+      $('findbar').hidden = false; syncSearch();
+      const field = $(kind === 'replace' ? 'replacement' : 'query'); field.focus(); field.select();
+    }
+    else if (kind === 'closeFind') { $('findbar').hidden = true; syncSearch(); focusEditor(); }
+    else if (kind === 'findNext' || kind === 'findPrevious') navigateSearch(kind === 'findNext' ? 1 : -1);
+    else if (kind === 'replaceOne' || kind === 'replaceAll') replaceSearch(kind === 'replaceAll');
     else if (!api) $('status').textContent = '请通过桌面应用使用文件功能';
     else if (kind === 'new') await load(await api.new());
     else if (kind === 'open') await load(await api.open(file));
+    else if (kind === 'reload') await load(await api.reload(currentPath));
+    else if (kind === 'rename') {
+      if (!currentPath || raw !== saved) { $('status').textContent = '请先保存文档和修改，再重命名'; return; }
+      const result = await api.rename();
+      if (result) {
+        documentRevision++; currentPath = result.path; name = result.name; imageToken = result.imageToken;
+        fileTree.setActive(currentPath); $('external-change').hidden = true;
+        document.querySelectorAll('#editor img[data-rea-src]').forEach(img => { img.src = imageURL(img.dataset.reaSrc, imageToken); });
+        refresh(); await fileTree.refresh(true); $('status').textContent = '文件已重命名，现有图片链接保持不变';
+      }
+    }
     else if (kind === 'save' || kind === 'saveAs') {
       const snapshot = raw;
       const result = await api.save(snapshot, kind === 'saveAs');
       if (result) {
-        name = result.name; saved = snapshot; imageToken = result.imageToken;
+        documentRevision++; currentPath = result.path; $('external-change').hidden = true;
+        name = result.name; saved = snapshot; imageToken = result.imageToken; fileTree.setActive(result.path);
         document.querySelectorAll('#editor img[data-rea-src]').forEach(img => { img.src = imageURL(img.dataset.reaSrc, imageToken); });
         refresh(); $('status').textContent = '已保存';
       }
@@ -170,7 +203,7 @@ async function action(kind, file) {
       if (!image) return;
       if (sourceMode) {
         $('source').setRangeText(`\n\n${imageMarkdown(image)}\n\n`, $('source').selectionStart, $('source').selectionEnd, 'end');
-        raw = $('source').value; refresh(); $('source').focus();
+        raw = sourceText(); refresh(); $('source').focus();
       } else crepe.editor.action(ctx => {
         const view = ctx.get(editorViewCtx);
         view.dispatch(view.state.tr.replaceSelectionWith(view.state.schema.nodes.image.create(image)).scrollIntoView());
@@ -179,25 +212,121 @@ async function action(kind, file) {
     } else if (kind === 'folder') {
       const folder = await api.folder();
       if (folder) {
-        $('files').replaceChildren();
-        for (const entry of folder.files) { const b = document.createElement('button'); b.textContent = entry.name; b.onclick = () => action('open', entry.path); $('files').append(b); }
-        $('status').textContent = `${folder.name} · ${folder.files.length} 个文件（当前层级）`;
+        workspacePath = folder.path; fileTree.set(folder);
+        $('folder-name').textContent = folder.name; $('folder-name').title = folder.path;
+        $('folder-tools').hidden = false;
+        $('status').textContent = '工作空间已打开，展开文件夹查看文档';
       }
-    } else if (kind === 'pdf') {
+    } else if (kind === 'refreshFolder') await fileTree.refresh();
+    else if (kind === 'revealFile') await fileTree.reveal();
+    else if (kind === 'pdf') {
       if (sourceMode && !(await toggleSource())) { $('status').textContent = '源码保护文档暂不支持排版 PDF 导出'; return; }
       const focused = document.body.classList.contains('focus');
       if (focused) document.body.classList.toggle('focus');
+      document.body.classList.add('exporting');
       try { $('status').textContent = await api.pdf() ? 'PDF 已导出' : '已取消导出'; }
-      finally { if (focused) document.body.classList.toggle('focus'); }
+      finally { document.body.classList.remove('exporting'); if (focused) document.body.classList.toggle('focus'); }
     }
   } catch (error) { $('status').textContent = error.message; }
-  finally { busy = false; }
+  finally { busy = false; if (pendingFilesChange) void checkFiles(); }
+}
+function editorView() { return crepe.editor.action(ctx => ctx.get(editorViewCtx)); }
+function focusEditor() { if (sourceMode) $('source').focus(); else editorView().focus(); }
+function searchState() {
+  if (!sourceMode) return searchKey.getState(editorView().state);
+  const matches = $('findbar').hidden ? [] : textMatches($('source').value, $('query').value, $('match-case').checked);
+  sourceSearchIndex = Math.max(0, Math.min(sourceSearchIndex, matches.length - 1));
+  return { matches, index: sourceSearchIndex };
+}
+function renderSearch() {
+  if (loading) return;
+  const { matches, index } = searchState();
+  $('find-count').textContent = matches.length ? `${index + 1} / ${matches.length}` : '0 / 0';
+  $('find-scope').textContent = sourceMode ? '范围：Markdown 源码' : '范围：正文（不跨段落）';
+  for (const id of ['find-previous', 'find-next', 'replace-one', 'replace-all']) $(id).disabled = !matches.length;
+}
+function syncSearch() {
+  sourceSearchIndex = 0;
+  const view = editorView();
+  view.dispatch(view.state.tr.setMeta(searchKey, { query: sourceMode || $('findbar').hidden ? '' : $('query').value, caseSensitive: $('match-case').checked, index: 0 }).setMeta('addToHistory', false));
+  renderSearch();
+}
+function selectSearchMatch(focus) {
+  const { matches, index } = searchState(), match = matches[index];
+  if (!match) return;
+  if (sourceMode) {
+    if (focus) $('source').focus();
+    $('source').setSelectionRange(match.from, match.to);
+  } else {
+    const view = editorView();
+    view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, match.from, match.to)).scrollIntoView().setMeta('addToHistory', false));
+    if (focus) view.focus();
+  }
+}
+function navigateSearch(direction) {
+  if ($('findbar').hidden) { $('findbar').hidden = false; syncSearch(); }
+  const { matches, index } = searchState();
+  if (!matches.length) return;
+  const next = (index + direction + matches.length) % matches.length;
+  if (sourceMode) sourceSearchIndex = next;
+  else { const view = editorView(); view.dispatch(view.state.tr.setMeta(searchKey, { index: next }).setMeta('addToHistory', false)); }
+  renderSearch(); selectSearchMatch(!$('findbar').contains(document.activeElement));
+}
+function replaceSearch(all) {
+  if ($('findbar').hidden) return;
+  const { matches, index } = searchState();
+  if (!matches.length) return;
+  const selected = all ? matches : [matches[index]], replacement = $('replacement').value;
+  const end = selected[0].from + replacement.length;
+  if (sourceMode) {
+    const first = selected[0].from, last = selected.at(-1).to;
+    const text = replaceTextMatches($('source').value.slice(first, last), selected.map(match => ({ from: match.from - first, to: match.to - first })), replacement);
+    const source = $('source'); source.focus(); source.setSelectionRange(first, last);
+    // WebKit's editing command records one native undo operation, including replace-all.
+    if (!document.execCommand('insertText', false, text)) { $('status').textContent = '替换未执行，请在源码编辑区重试'; return; }
+    raw = sourceText(); refresh();
+    const remaining = searchState().matches;
+    sourceSearchIndex = all ? 0 : Math.max(0, remaining.findIndex(match => match.from >= end));
+  } else {
+    const view = editorView(), tr = replaceDocumentMatches(view.state, selected, replacement);
+    const remaining = documentMatches(tr.doc, $('query').value, $('match-case').checked);
+    const next = all ? 0 : Math.max(0, remaining.findIndex(match => match.from >= end));
+    view.dispatch(closeHistory(tr).setMeta(searchKey, { index: next }));
+    view.dispatch(closeHistory(view.state.tr).setMeta('addToHistory', false));
+    view.focus();
+  }
+  renderSearch(); selectSearchMatch(true);
+  $('status').textContent = `已替换 ${selected.length} 处，可撤销`;
 }
 document.querySelectorAll('[data-action]').forEach(button => button.onclick = () => action(button.dataset.action));
-$('find-next').onclick = () => api?.find($('query').value);
-$('query').onkeydown = e => { if (e.key === 'Enter') api?.find($('query').value); };
+$('query').oninput = () => { if (!composing) { syncSearch(); selectSearchMatch(false); } };
+$('query').addEventListener('compositionend', () => { syncSearch(); selectSearchMatch(false); });
+$('match-case').onchange = () => { syncSearch(); selectSearchMatch(false); };
+$('findbar').onkeydown = event => {
+  if (event.isComposing || composing) return;
+  if (event.key === 'Escape') { event.preventDefault(); action('closeFind'); }
+  else if (event.key === 'Enter' && event.target === $('query')) { event.preventDefault(); action(event.shiftKey ? 'findPrevious' : 'findNext'); }
+  else if (event.key === 'Enter' && event.target === $('replacement')) { event.preventDefault(); action('replaceOne'); }
+};
 api?.onAction(action);
 api?.onDocument(doc => load(doc));
+async function checkFiles() {
+  if (!api || busy || importing || composing || checkingFiles) return;
+  pendingFilesChange = false; checkingFiles = true;
+  const path = currentPath, revision = documentRevision;
+  try {
+    const result = await api.fileState();
+    if (revision !== documentRevision || busy || importing || composing) { pendingFilesChange = true; return; }
+    if (path === currentPath && result.path === (currentPath || '')) {
+      $('external-change').hidden = result.state === 'unchanged';
+      $('external-message').textContent = ({ modified: '磁盘文件已在外部修改，编辑区内容已保留。', missing: '磁盘文件已删除或移动，编辑区内容已保留，请另存为。', unreadable: '无法读取磁盘文件，编辑区内容已保留。' })[result.state] || '';
+    }
+    if (workspacePath) await fileTree.refresh(true);
+  } catch (error) { $('status').textContent = '检查文件变化失败：' + error.message; }
+  finally { checkingFiles = false; if (pendingFilesChange) void checkFiles(); }
+}
+api?.onFilesChanged(() => { pendingFilesChange = true; void checkFiles(); });
+document.addEventListener('compositionend', () => { if (pendingFilesChange) void checkFiles(); });
 refresh();
 await api?.ready();
 

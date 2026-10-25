@@ -3,3 +3,33 @@
 #app { height: 100vh; display: flex; flex-direction: column; } header { height: 58px; border-bottom: 1px solid #e5e4df; display: flex; align-items: center; gap: 25px; padding: 0 22px; flex-shrink: 0; } header strong { font-size: 14px; letter-spacing: 1px; color: #52684c; } header strong span { color: #75786f; font-weight: 400; } #title { flex: 1; text-align: center; font-size: 12px; color: #777b71; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } nav { display: flex; gap: 4px; font-size: 12px; } #workspace { display: flex; flex: 1; min-height: 0; } aside { width: 225px; padding: 25px 13px; border-right: 1px solid #e5e4df; background: #f2f2ec; overflow: auto; flex-shrink: 0; } .aside-title { margin: 8px 10px 14px; color: #72786b; font-size: 11px; letter-spacing: 2px; display: flex; align-items: center; justify-content: space-between; } #files { margin-bottom: 32px; } #files button, #outline button { display: block; width: 100%; text-align: left; font-size: 12px; line-height: 1.7; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; } .muted, .sidebar-note { font-size: 11px; color: #8b9185; line-height: 1.8; margin: 12px; } .sidebar-note { margin-top: 70px; } main { flex: 1; overflow: auto; position: relative; min-width: 0; } #editor { max-width: 900px; margin: auto; } .milkdown { --crepe-color-background: #faf9f6; --crepe-color-surface: #f2f2ec; --crepe-color-primary: #52684c; --crepe-font-default: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; } .milkdown .ProseMirror { padding: 65px 80px 120px; min-height: calc(100vh - 90px); } .milkdown .ProseMirror h1 { font-size: 32px; letter-spacing: -.8px; } .milkdown .ProseMirror p { line-height: 1.9; } #source { border: 0; outline: 0; padding: 50px 60px; width: 100%; height: 100%; resize: none; background: inherit; color: inherit; font: 14px/1.9 ui-monospace, Menlo, monospace; } footer { height: 28px; padding: 0 22px; display: flex; justify-content: space-between; align-items: center; font-size: 10px; color: #85897f; border-top: 1px solid #e5e4df; flex-shrink: 0; } #status { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; } #findbar { position: sticky; top: 0; z-index: 10; padding: 8px; background: #f2f2ec; text-align: right; font-size: 12px; } #query { padding: 6px; border: 1px solid #ccc; border-radius: 4px; } .focus .ProseMirror .rea-unfocused { opacity: .25; } .dark { background: #20241f; color: #d9dfd5; } .dark aside, .dark #findbar { background: #272d26; } .dark header, .dark aside, .dark footer { border-color: #394036; } .dark button:hover { background: #394036; } .dark .milkdown { --crepe-color-background: #20241f; --crepe-color-on-background: #d9dfd5; --crepe-color-surface: #30382e; --crepe-color-on-surface: #d9dfd5; --crepe-color-surface-low: #293026; --crepe-color-primary: #a6c09b; --crepe-color-outline: #83917b; } @media(max-width:850px) { aside { width: 180px; } .milkdown .ProseMirror { padding: 40px; } header { gap: 8px; } } @media print { header, aside, footer, #findbar, .milkdown-block-handle, .milkdown-toolbar { display: none !important; } #app, #workspace, main { height: auto; display: block; overflow: visible; } .milkdown .ProseMirror { padding: 0; min-height: 0; } body, .milkdown { background: white !important; color: black !important; --crepe-color-background: white; --crepe-color-on-background: black; } }
 
 .milkdown .ProseMirror img { max-width: 100%; height: auto; vertical-align: middle; }
+
+#folder-tools { display: flex; align-items: center; gap: 3px; margin: 0 5px 8px; font-size: 12px; }
+#folder-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#folder-tools button { padding: 4px 7px; }
+#files summary { cursor: pointer; padding: 7px 8px; font-size: 12px; overflow-wrap: anywhere; border-radius: 5px; }
+#files summary:hover { background: #e8e9e2; }
+#files summary:focus-visible { outline: 2px solid #6c8064; }
+#files .folder-children { margin-left: 12px; border-left: 1px solid #d8dcd2; padding-left: 4px; }
+#files .current-file { background: #dfe7d9; font-weight: 600; }
+.dark #files summary:hover, .dark #files .current-file { background: #394036; }
+.dark #files .folder-children { border-color: #394036; }
+
+#findbar .find-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 3px 0; }
+#findbar input:not([type="checkbox"]) { min-width: 110px; width: 190px; padding: 6px; border: 1px solid #b5b9ae; border-radius: 4px; background: inherit; color: inherit; }
+#findbar label { display: flex; align-items: center; white-space: nowrap; }
+#find-count { min-width: 45px; text-align: center; }
+#find-scope { color: #72786b; font-size: 11px; }
+#findbar button:disabled { opacity: .45; cursor: default; }
+.search-match { background: #ffeb97; color: #262b22; }
+.search-current { background: #ffc34f; outline: 1px solid #8b6718; }
+.dark #find-scope { color: #b3bda9; }
+@media print { .search-match, .search-current { background: transparent; color: inherit; outline: none; } }
+
+.exporting .search-match, .exporting .search-current { background: transparent; color: inherit; outline: none; }
+
+#rename-file { width: 100%; text-align: left; font-size: 11px; margin-bottom: 8px; }
+#external-change { padding: 10px 16px; background: #fff0ce; color: #654300; font-size: 12px; line-height: 1.8; }
+#external-change button { margin-left: 6px; border: 1px solid #c3a568; }
+@media print { #external-change { display: none !important; } }
+.exporting #external-change { display: none; }

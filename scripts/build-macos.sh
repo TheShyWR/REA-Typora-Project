@@ -7,7 +7,7 @@ npm run build > build/vite.log
 app='release/REA Markdown.app'
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
 cp native/App.swift build/main.swift
-xcrun swiftc build/main.swift native/DocumentStore.swift native/ImageAssets.swift \
+xcrun swiftc build/main.swift native/DocumentStore.swift native/ImageAssets.swift native/Workspace.swift native/FileWatcher.swift \
   -target "$(uname -m)-apple-macos13.0" \
   -o "$app/Contents/MacOS/REAMarkdown" \
   -framework Cocoa -framework WebKit -module-cache-path build/swift-cache

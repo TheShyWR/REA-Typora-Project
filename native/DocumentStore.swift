@@ -65,6 +65,32 @@ final class DocumentStore {
         current = draft.path.map { URL(fileURLWithPath: $0) }; baseline = draft.baseline
         try? FileManager.default.removeItem(at: url)
     }
+    func externalState() -> String {
+        guard let current, let baseline else { return "unchanged" }
+        guard FileManager.default.fileExists(atPath:current.path) else { return "missing" }
+        guard let bytes = try? Data(contentsOf:current) else { return "unreadable" }
+        return bytes == baseline ? "unchanged" : "modified"
+    }
+    func rename(_ name: String) throws -> URL {
+        guard let current, baseline != nil else { throw Self.fileError("请先保存文档。") }
+        guard !name.isEmpty, name != ".", name != "..", !name.hasPrefix("."),
+              !name.contains("/"), !name.contains("\\"), !name.contains(":"),
+              name.rangeOfCharacter(from:.controlCharacters) == nil,
+              name == name.trimmingCharacters(in:.whitespacesAndNewlines),
+              ["md","markdown","txt"].contains((name as NSString).pathExtension.lowercased()) else {
+            throw Self.fileError("请输入有效文件名，并保留 .md、.markdown 或 .txt 扩展名。")
+        }
+        guard externalState() == "unchanged" else { throw Self.fileError("原文件已在外部修改或删除，请先处理磁盘变化。") }
+        if name == current.lastPathComponent { return current }
+        let target = current.deletingLastPathComponent().appendingPathComponent(name)
+        guard !FileManager.default.fileExists(atPath:target.path) else { throw Self.fileError("同名文件已存在，未覆盖；仅更改大小写时请先使用中间名称。") }
+        try FileManager.default.moveItem(at:current,to:target)
+        self.current = target
+        return target
+    }
+    private static func fileError(_ message: String) -> NSError {
+        NSError(domain:"DocumentStore",code:3,userInfo:[NSLocalizedDescriptionKey:message])
+    }
     func save(_ text: String, to url: URL) throws {
         if url.standardizedFileURL == current?.standardizedFileURL {
             guard let baseline, (try? Data(contentsOf: url)) == baseline else {
