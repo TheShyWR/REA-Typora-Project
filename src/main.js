@@ -1,7 +1,11 @@
+import { createWritingSettings, defaultWritingSettings } from './writing-settings.js';
+import { typewriterPlugin } from './typewriter.js';
 import { Crepe } from '@milkdown/crepe';
-import { parserCtx, serializerCtx, editorViewCtx, remarkStringifyOptionsCtx } from '@milkdown/kit/core';
+import { parserCtx, serializerCtx, editorViewCtx, remarkCtx, remarkStringifyOptionsCtx } from '@milkdown/kit/core';
 import { createFileTree } from './file-tree.js';
+import { createWorkspaceSearch } from './workspace-search.js';
 import { imageURL, imageMarkdown } from './images.js';
+import { imageTransferPlan } from './image-transfer.js';
 import { importImageFiles } from './image-import.js';
 import { imageSchema } from '@milkdown/kit/preset/commonmark';
 import { focusDecorations } from './focus.js';
@@ -18,6 +22,7 @@ import './style.css';
 const $ = id => document.getElementById(id);
 const api = window.desktop;
 const fileTree = createFileTree($('files'), { list: path => api.listFolder(path), open: path => action('open', path), report: text => { $('status').textContent = text; } });
+const workspaceSearch = createWorkspaceSearch({ panel: $('workspace-search'), query: $('workspace-query'), matchCase: $('workspace-case'), run: $('workspace-run'), close: $('workspace-close'), summary: $('workspace-summary'), results: $('workspace-results') }, { search: (query, matchCase) => api.searchWorkspace(query, matchCase), open: row => action('openSearch', row) });
 const protection = document.createElement('div');
 protection.id = 'protection'; protection.setAttribute('role', 'status');
 protection.style.cssText = 'padding:12px 20px;background:#fff0ce;color:#654300;font-size:13px;line-height:1.6';
@@ -64,17 +69,55 @@ crepe.editor.use($view(imageSchema.node, () => node => {
   return { dom, update };
 }));
 crepe.editor.use($prose(() => searchPlugin(renderSearch)));
+crepe.editor.use($prose(() => typewriterPlugin(document.querySelector('main'), () => !loading && !sourceMode && !composing && document.body.classList.contains('typewriter') && !document.body.classList.contains('exporting'))));
 await crepe.create();
 editorRaw = raw;
 loading = false;
-function refresh() {
+const systemTheme = matchMedia('(prefers-color-scheme: dark)');
+const settings = createWritingSettings({
+  read: () => api ? api.preferences() : Promise.resolve({ ...defaultWritingSettings }),
+  write: value => api ? api.savePreferences(value) : Promise.resolve(value),
+  apply: applyWritingSettings, report: text => { $('settings-status').textContent = text; $('status').textContent = text; }
+});
+function applyWritingSettings(value) {
+  document.body.classList.toggle('dark', value.theme === 'dark' || (value.theme === 'system' && systemTheme.matches));
+  document.body.classList.toggle('typewriter', value.typewriter && !sourceMode);
+  const fonts = { system: "-apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif", serif: "'Songti SC', Georgia, serif", mono: 'ui-monospace, Menlo, monospace' };
+  const style = document.documentElement.style;
+  style.setProperty('--writing-font', fonts[value.fontFamily]);
+  style.setProperty('--writing-size', `${value.fontSize}px`);
+  style.setProperty('--writing-line-height', value.lineHeight);
+  style.setProperty('--writing-width', `${value.contentWidth}px`);
+  for (const key of Object.keys(defaultWritingSettings)) {
+    const field = $('pref-' + key);
+    if (key === 'typewriter') field.checked = value[key]; else field.value = value[key];
+  }
+  $('typewriter-toggle').setAttribute('aria-pressed', String(value.typewriter && !sourceMode));
+  const view = editorView(); view.dispatch(view.state.tr.setMeta('addToHistory', false));
+}
+systemTheme.addEventListener('change', () => applyWritingSettings(settings.value));
+await settings.load();
+for (const field of $('preferences').querySelectorAll('select,input')) field.onchange = async () => {
+  const value = {};
+  for (const [key, initial] of Object.entries(defaultWritingSettings)) {
+    const input = $('pref-' + key);
+    value[key] = typeof initial === 'boolean' ? input.checked : typeof initial === 'number' ? Number(input.value) : input.value;
+  }
+  const controls = $('preferences').querySelectorAll('select,input,button');
+  controls.forEach(control => { control.disabled = true; });
+  if (await settings.change(value)) $('settings-status').textContent = '设置已保存';
+  else applyWritingSettings(settings.value);
+  controls.forEach(control => { control.disabled = false; });
+};
+$('preferences').addEventListener('close', () => focusEditor());
+function refresh(syncDraft = true) {
   renderSearch();
   const dirty = raw !== saved;
   $('status').textContent = dirty ? '尚未保存' : '无未保存修改';
   $('title').textContent = name + (dirty ? ' •' : '');
   document.title = `${name}${dirty ? ' •' : ''} — REA Markdown`;
   try {
-    Promise.resolve(api?.dirty(dirty, raw)).catch(error => {
+    Promise.resolve(syncDraft ? api?.dirty(dirty, raw) : undefined).catch(error => {
       $('status').textContent = `恢复副本更新失败：${error.message || error}`;
     });
   } catch (error) { $('status').textContent = `恢复副本更新失败：${error.message || error}`; }
@@ -105,6 +148,8 @@ function checkProtection() {
 function showMode() {
   $('source').hidden = !sourceMode; $('editor').hidden = sourceMode;
   $('mode').textContent = sourceMode ? '排版' : '源码';
+  document.body.classList.toggle('typewriter', settings.value.typewriter && !sourceMode);
+  $('typewriter-toggle').setAttribute('aria-pressed', String(settings.value.typewriter && !sourceMode));
   syncSearch();
 }
 async function load(doc) {
@@ -153,21 +198,35 @@ for (const kind of ['paste', 'drop']) $('source').addEventListener(kind, event =
   }
 });
 async function action(kind, file) {
+  if ($('preferences').open && !['preferences', 'closePreferences', 'resetPreferences'].includes(kind)) return;
   if (importing) { $('status').textContent = '图片正在导入，请稍后再操作'; return; }
   if (busy) return;
-  if (composing && ['source', 'new', 'open', 'save', 'saveAs', 'pdf', 'image', 'find', 'findNext', 'findPrevious', 'replace', 'replaceOne', 'replaceAll', 'rename', 'reload'].includes(kind)) {
+  if (composing && ['source', 'new', 'open', 'save', 'saveAs', 'pdf', 'image', 'find', 'findNext', 'findPrevious', 'replace', 'replaceOne', 'replaceAll', 'rename', 'reload', 'workspaceSearch', 'openSearch', 'preferences', 'typewriter'].includes(kind)) {
     $('status').textContent = '请先完成当前输入法候选字，再执行操作'; return;
   }
   busy = true;
   try {
     if (kind === 'source') await toggleSource();
-    else if (kind === 'theme') document.body.classList.toggle('dark');
+    else if (kind === 'preferences') { $('settings-status').textContent = ''; $('preferences').showModal(); }
+    else if (kind === 'closePreferences') $('preferences').close();
+    else if (kind === 'resetPreferences') {
+      if (await settings.change(defaultWritingSettings)) $('settings-status').textContent = '已恢复默认写作设置';
+    }
+    else if (kind === 'theme') await settings.change({ theme: document.body.classList.contains('dark') ? 'light' : 'dark' });
+    else if (kind === 'typewriter') {
+      if (sourceMode) { $('status').textContent = '打字机模式用于排版编辑，请先切换到排版'; return; }
+      if (await settings.change({ typewriter: !settings.value.typewriter })) {
+        focusEditor(); $('status').textContent = settings.value.typewriter ? '打字机模式已开启' : '打字机模式已关闭';
+      }
+    }
     else if (kind === 'focus') {
       if (sourceMode) { $('status').textContent = '段落专注用于排版模式，请先切换到排版'; return; }
       document.body.classList.toggle('focus');
       crepe.editor.action(ctx => { const view = ctx.get(editorViewCtx); view.dispatch(view.state.tr); view.focus(); });
       $('status').textContent = document.body.classList.contains('focus') ? '段落专注已开启' : '段落专注已关闭';
     }
+    else if (kind === 'workspaceSearch') workspaceSearch.show();
+    else if (kind === 'closeWorkspaceSearch') { workspaceSearch.close(); focusEditor(); }
     else if (kind === 'find' || kind === 'replace') {
       $('findbar').hidden = false; syncSearch();
       const field = $(kind === 'replace' ? 'replacement' : 'query'); field.focus(); field.select();
@@ -178,6 +237,17 @@ async function action(kind, file) {
     else if (!api) $('status').textContent = '请通过桌面应用使用文件功能';
     else if (kind === 'new') await load(await api.new());
     else if (kind === 'open') await load(await api.open(file));
+    else if (kind === 'openSearch') {
+      const doc = await api.openSearch(file.path);
+      if (!doc) return;
+      await load(doc);
+      if (doc.searchFingerprint !== file.fingerprint) { $('status').textContent = '文件内容已变化，已打开当前版本，请重新搜索后定位'; return; }
+      sourceMode = true; $('source').value = raw; showMode();
+      $('source').focus(); $('source').setSelectionRange(file.from, file.to);
+      const lineHeight = parseFloat(getComputedStyle($('source')).lineHeight);
+      $('source').scrollTop = Math.max(0, (file.line - 3) * lineHeight);
+      $('status').textContent = `已定位到源码第 ${file.line} 行`;
+    }
     else if (kind === 'reload') await load(await api.reload(currentPath));
     else if (kind === 'rename') {
       if (!currentPath || raw !== saved) { $('status').textContent = '请先保存文档和修改，再重命名'; return; }
@@ -191,12 +261,14 @@ async function action(kind, file) {
     }
     else if (kind === 'save' || kind === 'saveAs') {
       const snapshot = raw;
-      const result = await api.save(snapshot, kind === 'saveAs');
+      const plan = kind === 'saveAs' ? imageTransferPlan(snapshot, text => crepe.editor.action(ctx => ctx.get(remarkCtx).parse(text))) : { sources: [], issue: '' };
+      const result = await api.save(snapshot, kind === 'saveAs', plan);
       if (result) {
         documentRevision++; currentPath = result.path; $('external-change').hidden = true;
         name = result.name; saved = snapshot; imageToken = result.imageToken; fileTree.setActive(result.path);
         document.querySelectorAll('#editor img[data-rea-src]').forEach(img => { img.src = imageURL(img.dataset.reaSrc, imageToken); });
-        refresh(); $('status').textContent = '已保存';
+        // Native save already cleared the draft; only resync if newer edits arrived.
+        refresh(raw !== saved); $('status').textContent = result.saveStatus || '已保存';
       }
     } else if (kind === 'image') {
       const image = await api.pickImage();
@@ -212,7 +284,7 @@ async function action(kind, file) {
     } else if (kind === 'folder') {
       const folder = await api.folder();
       if (folder) {
-        workspacePath = folder.path; fileTree.set(folder);
+        workspacePath = folder.path; fileTree.set(folder); workspaceSearch.setRoot(folder.path);
         $('folder-name').textContent = folder.name; $('folder-name').title = folder.path;
         $('folder-tools').hidden = false;
         $('status').textContent = '工作空间已打开，展开文件夹查看文档';
@@ -325,7 +397,7 @@ async function checkFiles() {
   } catch (error) { $('status').textContent = '检查文件变化失败：' + error.message; }
   finally { checkingFiles = false; if (pendingFilesChange) void checkFiles(); }
 }
-api?.onFilesChanged(() => { pendingFilesChange = true; void checkFiles(); });
+api?.onFilesChanged(() => { workspaceSearch.changed(); pendingFilesChange = true; void checkFiles(); });
 document.addEventListener('compositionend', () => { if (pendingFilesChange) void checkFiles(); });
 refresh();
 await api?.ready();

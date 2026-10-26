@@ -12,6 +12,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
     var pending: URL?
     let workspace = Workspace()
     let watcher = FileWatcher()
+    let preferences = WritingPreferences()
     let bridge = """
     (() => {
       let id = 0; const pending = new Map();
@@ -19,8 +20,10 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
       const invoke = (method, ...args) => new Promise((resolve, reject) => { const key = ++id; pending.set(key, {resolve, reject}); window.webkit.messageHandlers.desktop.postMessage({id:key,method,args}); });
       window.desktop = {
         new: () => invoke('new'), open: file => invoke('open', file || null),
-        save: (text, saveAs) => invoke('save',text,!!saveAs), folder: () => invoke('folder'),
+        save: (text, saveAs, images) => invoke('save',text,!!saveAs,images || {sources:[],issue:''}), folder: () => invoke('folder'),
         listFolder: path => invoke('listFolder', path),
+        searchWorkspace: (query, matchCase) => invoke('searchWorkspace',query,matchCase), openSearch: path => invoke('openSearch',path),
+        preferences: () => invoke('preferences'), savePreferences: value => invoke('savePreferences',value),
         fileState: () => invoke('fileState'), reload: path => invoke('reload', path), rename: () => invoke('rename'),
         onFilesChanged: callback => window.__nativeFilesChanged = callback,
         dirty: (value, text) => invoke('dirty',value,text), pdf: () => invoke('pdf'),
@@ -76,13 +79,13 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
                 item.representedObject = action; item.target = self; sub.addItem(item)
             }
         }
-        section("REA Markdown", [("关于 REA Markdown","about",""),("退出 REA Markdown","quit","q")])
+        section("REA Markdown", [("关于 REA Markdown","about",""),("写作设置…","preferences",","),("退出 REA Markdown","quit","q")])
         section("文件", [("新建","new","n"),("打开…","open","o"),("保存","save","s"),("另存为…","saveAs",""),("打开文件夹…","folder",""),("刷新目录","refreshFolder",""),("定位当前文件","revealFile",""),("重命名当前文件…","rename",""),("插入图片…","image",""),("导出 PDF…","pdf","")])
         let edit = NSMenuItem(); let editMenu = NSMenu(title:"编辑"); edit.submenu = editMenu; menu.addItem(edit)
         for (title, selector, key) in [("撤销","undo:","z"),("重做","redo:","Z"),("剪切","cut:","x"),("复制","copy:","c"),("粘贴","paste:","v"),("全选","selectAll:","a")] {
             editMenu.addItem(withTitle:title, action:Selector(selector), keyEquivalent:key)
         }
-        section("视图",[("源码模式","source","/"),("查找","find","f"),("查找下一个","findNext","g"),("查找上一个","findPrevious","G"),("查找与替换","replace",""),("专注模式","focus",""),("切换主题","theme","")])
+        section("视图",[("源码模式","source","/"),("查找","find","f"),("查找下一个","findNext","g"),("查找上一个","findPrevious","G"),("查找与替换","replace",""),("搜索工作空间…","workspaceSearch","F"),("专注模式","focus",""),("打字机模式","typewriter",""),("切换主题","theme","")])
         NSApp.mainMenu = menu
     }
     @objc func menuAction(_ sender: NSMenuItem) {
@@ -173,6 +176,10 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
         do {
             switch method {
             case "ready": ready = true; reply(id); restoreDrafts(); if let url = pending { pending = nil; openExternal(url) }
+            case "preferences": reply(id,preferences.load())
+            case "savePreferences":
+                guard let value = args.first as? [String:Any] else { reply(id,error:"缺少写作设置"); return }
+                reply(id,try preferences.save(value))
             case "dirty":
                 guard let value = args.first as? Bool, args.count > 1, let text = args[1] as? String else { reply(id,error:"缺少恢复草稿内容"); return }
                 dirty = value; window.isDocumentEdited = dirty
@@ -180,18 +187,39 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
                 reply(id)
             case "new":
                 guard mayDiscard() else { reply(id); return }; try store.new(); images.setDocument(nil); updateWatches(); dirty = false; window.isDocumentEdited = false; window.title = "未命名.md"; reply(id,payload(""))
-            case "open":
+            case "open", "openSearch":
                 guard mayDiscard() else { reply(id); return }
                 var url: URL?
                 if let file = args.first as? String { url = try workspace.document(file) }
                 else { let panel = NSOpenPanel(); panel.allowedFileTypes = ["md","markdown","txt"]; panel.allowsMultipleSelection = false; if panel.runModal() == .OK { url = panel.url } }
-                if let url { reply(id,try document(url)) } else { reply(id) }
+                if let url {
+                    var result = try document(url)
+                    if method == "openSearch" { result["searchFingerprint"] = WorkspaceSearch.fingerprint(result["text"] ?? "") }
+                    reply(id,result)
+                } else { reply(id) }
             case "save":
-                guard let text = args.first as? String else { reply(id,error:"无效内容"); return }
-                var url = current
-                if url == nil || (args.last as? Bool == true) { let panel = NSSavePanel(); panel.allowedFileTypes = ["md"]; panel.nameFieldStringValue = current?.lastPathComponent ?? "未命名.md"; if panel.runModal() == .OK { url = panel.url } else { reply(id); return } }
+                guard let text = args.first as? String, args.count == 3, let saveAs = args[1] as? Bool, let plan = args[2] as? [String:Any], let sources = plan["sources"] as? [String], let issue = plan["issue"] as? String else { reply(id,error:"无效保存请求"); return }
+                var url = current, copyImages = false
+                if url == nil || saveAs {
+                    let panel = NSSavePanel(); panel.allowedFileTypes = ["md"]; panel.nameFieldStringValue = current?.lastPathComponent ?? "未命名.md"
+                    let copy = NSButton(checkboxWithTitle:"同时复制本地相对图片（保留路径，不覆盖不同内容）",target:nil,action:nil)
+                    copy.state = .on; copy.frame = NSRect(x:0,y:0,width:430,height:28)
+                    if current != nil { panel.accessoryView = copy }
+                    guard panel.runModal() == .OK else { reply(id); return }
+                    url = panel.url; copyImages = current != nil && copy.state == .on
+                }
                 guard let url else { reply(id); return }
-                try store.save(text, to:url); if images.document != current { images.setDocument(current) }; updateWatches(force:true); dirty = false; window.isDocumentEdited = false; window.title = url.lastPathComponent; reply(id,payload(text))
+                let changedDirectory = current.map { $0.deletingLastPathComponent().resolvingSymlinksInPath() != url.deletingLastPathComponent().resolvingSymlinksInPath() } ?? false
+                let status: String
+                if copyImages && changedDirectory, let current {
+                    guard issue.isEmpty else { throw ImageAssets.failure(issue) }
+                    status = try ImageTransfer(from:current,to:url,sources:sources).save(text,store:store)
+                } else {
+                    status = try store.save(text,to:url) ?? (changedDirectory && (!sources.isEmpty || !issue.isEmpty) ? "已另存文档，未复制图片，请核对相对链接" : "已保存")
+                }
+                if images.document != current { images.setDocument(current) }
+                updateWatches(force:true); dirty = false; window.isDocumentEdited = false; window.title = url.lastPathComponent
+                var result = payload(text); result["saveStatus"] = status; reply(id,result)
             case "importImages":
                 guard args.count == 2, let inputs = args[0] as? [[String:String]], let token = args[1] as? String else { throw ImageAssets.failure("无效图片请求") }
                 reply(id,try images.importImages(inputs,token:token))
@@ -207,6 +235,16 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
             case "listFolder":
                 guard let path = args.first as? String else { reply(id,error:"缺少文件夹路径"); return }
                 let result = try workspace.list(path); updateWatches(); reply(id,result)
+            case "searchWorkspace":
+                guard let root = workspace.root, let query = args.first as? String, args.count == 2, let matchCase = args[1] as? Bool else { reply(id,error:"请先打开工作空间并输入搜索文本。"); return }
+                DispatchQueue.global(qos:.userInitiated).async {
+                    do {
+                        let result = try WorkspaceSearch.search(root:root,query:query,caseSensitive:matchCase)
+                        DispatchQueue.main.async { self.reply(id,result) }
+                    } catch {
+                        DispatchQueue.main.async { self.reply(id,error:error.localizedDescription) }
+                    }
+                }
             case "fileState":
                 reply(id,["path":current?.path ?? "", "state":store.externalState()])
             case "reload":

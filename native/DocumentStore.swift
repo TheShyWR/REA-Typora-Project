@@ -91,7 +91,8 @@ final class DocumentStore {
     private static func fileError(_ message: String) -> NSError {
         NSError(domain:"DocumentStore",code:3,userInfo:[NSLocalizedDescriptionKey:message])
     }
-    func save(_ text: String, to url: URL) throws {
+    @discardableResult
+    func save(_ text: String, to url: URL) throws -> String? {
         if url.standardizedFileURL == current?.standardizedFileURL {
             guard let baseline, (try? Data(contentsOf: url)) == baseline else {
                 throw NSError(domain: "DocumentStore", code: 2, userInfo: [NSLocalizedDescriptionKey: "文件已被其他程序修改或删除，请另存为以保留两个版本。"])
@@ -109,6 +110,8 @@ final class DocumentStore {
         bytes.append(Data(output.utf8))
         try bytes.write(to: url, options: .atomic)
         current = url; baseline = bytes
-        try clearRecovery()
+        // Once disk commit succeeds, cleanup failure must not roll back its image files.
+        do { try clearRecovery(); return nil }
+        catch { return "文档已保存，但旧恢复草稿清理失败：" + error.localizedDescription }
     }
 }

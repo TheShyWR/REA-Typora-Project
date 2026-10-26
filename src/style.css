@@ -33,3 +33,38 @@
 #external-change button { margin-left: 6px; border: 1px solid #c3a568; }
 @media print { #external-change { display: none !important; } }
 .exporting #external-change { display: none; }
+
+#workspace-search-toggle { width: 100%; text-align: left; font-size: 11px; margin-bottom: 8px; }
+#workspace-search { padding: 8px 4px 16px; border-bottom: 1px solid #b5b9ae; margin-bottom: 12px; font-size: 12px; }
+#workspace-query { width: 100%; min-width: 0; padding: 7px; border: 1px solid #b5b9ae; border-radius: 4px; background: inherit; color: inherit; }
+#workspace-search label { display: flex; align-items: center; gap: 4px; margin: 8px 0; }
+#workspace-summary { font-size: 11px; line-height: 1.7; overflow-wrap: anywhere; }
+#workspace-run:disabled { opacity: .45; cursor: default; }
+#workspace-results { max-height: 45vh; overflow: auto; }
+#workspace-results button { display: block; width: 100%; text-align: left; border-bottom: 1px solid #b5b9ae55; }
+#workspace-results strong, #workspace-results span { display: block; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 11px; line-height: 1.7; }
+#workspace-results span { opacity: .8; margin-top: 4px; }
+
+:root { --writing-font: -apple-system, BlinkMacSystemFont, 'PingFang SC', sans-serif; --writing-size: 16px; --writing-line-height: 1.9; --writing-width: 900px; }
+#editor { max-width: var(--writing-width); }
+.milkdown { --crepe-font-default: var(--writing-font); --crepe-base-font-size: var(--writing-size); }
+.milkdown .ProseMirror { font-family: var(--writing-font); font-size: var(--writing-size); line-height: var(--writing-line-height); }
+.milkdown .ProseMirror p, .milkdown .ProseMirror li { line-height: var(--writing-line-height); }
+.milkdown .ProseMirror h1 { font-size: 2em; }
+#source { font-size: var(--writing-size); line-height: var(--writing-line-height); }
+.typewriter .milkdown .ProseMirror { padding-top: max(65px, var(--typewriter-space, 40vh)); padding-bottom: max(120px, var(--typewriter-space, 40vh)); }
+#typewriter-toggle[aria-pressed="true"] { background: #dfe7d9; }
+.dark #typewriter-toggle[aria-pressed="true"] { background: #394036; }
+#preferences { width: min(520px, 90vw); max-height: 85vh; overflow: auto; padding: 24px; border: 1px solid #b5b9ae; border-radius: 12px; background: #faf9f6; color: #30342f; box-shadow: 0 16px 60px #0003; }
+#preferences::backdrop { background: #0005; }
+#preferences h2 { margin: 0 0 20px; font-size: 20px; }
+.settings-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.settings-grid label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; }
+.settings-grid select { width: 100%; padding: 7px; font: inherit; color: inherit; background: inherit; border: 1px solid #9aab90; border-radius: 5px; }
+.settings-grid .checkbox-label { flex-direction: row; align-items: center; }
+#preferences p, #settings-status { font-size: 12px; line-height: 1.8; }
+.settings-actions { display: flex; justify-content: space-between; margin-top: 16px; }
+.settings-actions button { border: 1px solid #9aab90; }
+.dark #preferences { background: #272d26; color: #d9dfd5; }
+.exporting.typewriter .milkdown .ProseMirror { padding-top: 65px; padding-bottom: 120px; }
+@media print { #preferences { display: none !important; } .typewriter .milkdown .ProseMirror { padding: 0; } }
