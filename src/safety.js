@@ -1,7 +1,16 @@
+import { frontMatterPrefix } from './front-matter.js';
+
 // Preserve original Markdown whenever the rich-text model cannot round-trip it.
 export function markdownProtection(text, roundTrip) {
-  const content = text.replace(/^\uFEFF/, '');
-  if (/^(?:---|\+\+\+)[ \t]*\r?\n/.test(content)) return 'Front Matter 元数据';
+  let content = text.replace(/^\uFEFF/, '');
+  if (text.startsWith('\uFEFF') || text.includes('\r')) return 'BOM 或原始换行格式';
+  if (/^\+\+\+[ \t]*\n/.test(content)) return 'TOML Front Matter 元数据';
+  if (/^---[ \t]*\n/.test(content)) {
+    const prefix = frontMatterPrefix(content);
+    if (!prefix) return '未闭合的 YAML Front Matter';
+    if (/^\.\.\.[ \t]*$/m.test(prefix)) return '尚未支持的 YAML 结束标记';
+    content = content.slice(prefix.length);
+  }
   // Ignore fenced code when checking Markdown/HTML-like constructs.
   let fence = null;
   const visible = content.split(/\r?\n/).filter(line => {
@@ -16,7 +25,6 @@ export function markdownProtection(text, roundTrip) {
   if (/\[\^[^\]\n]+\]/.test(visible)) return '脚注';
   if (/<(?:!--|\/?[A-Za-z][\w:-]*(?:\s[^>]*|\s*\/?)>|![A-Z]|\?)/.test(visible)) return 'HTML 或自定义标签';
   if (/^\s*(?::::|\$\$\$)/m.test(visible)) return '自定义扩展块';
-  if (text.startsWith('\uFEFF') || text.includes('\r')) return 'BOM 或原始换行格式';
   try {
     const rendered = roundTrip(text);
     // Only a final newline may differ. Everything else is intentionally conservative.

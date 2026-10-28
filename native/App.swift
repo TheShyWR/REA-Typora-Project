@@ -22,6 +22,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
         new: () => invoke('new'), open: file => invoke('open', file || null),
         save: (text, saveAs, images) => invoke('save',text,!!saveAs,images || {sources:[],issue:''}), folder: () => invoke('folder'),
         listFolder: path => invoke('listFolder', path),
+        createDocument: () => invoke('createDocument'), createFolder: () => invoke('createFolder'),
         searchWorkspace: (query, matchCase) => invoke('searchWorkspace',query,matchCase), openSearch: path => invoke('openSearch',path),
         preferences: () => invoke('preferences'), savePreferences: value => invoke('savePreferences',value),
         fileState: () => invoke('fileState'), reload: path => invoke('reload', path), rename: () => invoke('rename'),
@@ -80,7 +81,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
             }
         }
         section("REA Markdown", [("关于 REA Markdown","about",""),("写作设置…","preferences",","),("退出 REA Markdown","quit","q")])
-        section("文件", [("新建","new","n"),("打开…","open","o"),("保存","save","s"),("另存为…","saveAs",""),("打开文件夹…","folder",""),("刷新目录","refreshFolder",""),("定位当前文件","revealFile",""),("重命名当前文件…","rename",""),("插入图片…","image",""),("导出 PDF…","pdf","")])
+        section("文件", [("新建","new","n"),("打开…","open","o"),("保存","save","s"),("另存为…","saveAs",""),("打开文件夹…","folder",""),("在工作空间新建文档…","createDocument",""),("在工作空间新建文件夹…","createFolder",""),("刷新目录","refreshFolder",""),("定位当前文件","revealFile",""),("重命名当前文件…","rename",""),("插入图片…","image",""),("插入 YAML 元数据","frontMatter",""),("导出 PDF…","pdf","")])
         let edit = NSMenuItem(); let editMenu = NSMenu(title:"编辑"); edit.submenu = editMenu; menu.addItem(edit)
         for (title, selector, key) in [("撤销","undo:","z"),("重做","redo:","Z"),("剪切","cut:","x"),("复制","copy:","c"),("粘贴","paste:","v"),("全选","selectAll:","a")] {
             editMenu.addItem(withTitle:title, action:Selector(selector), keyEquivalent:key)
@@ -232,6 +233,27 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
                 let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
                 guard panel.runModal() == .OK, let url = panel.url else { reply(id); return }
                 let result = try workspace.select(url); updateWatches(); reply(id,result)
+            case "createDocument", "createFolder":
+                guard let root = workspace.root else { reply(id,error:"请先打开工作空间文件夹。"); return }
+                let directory = method == "createFolder"
+                if !directory && !mayDiscard() { reply(id); return }
+                let chooser = NSOpenPanel(); chooser.canChooseFiles = false; chooser.canChooseDirectories = true
+                chooser.allowsMultipleSelection = false; chooser.canCreateDirectories = false; chooser.directoryURL = root
+                chooser.message = "在当前工作空间内选择新建位置"; chooser.prompt = "选择位置"
+                guard chooser.runModal() == .OK, let parent = chooser.url else { reply(id); return }
+                let panel = NSAlert(); panel.messageText = directory ? "新建文件夹" : "新建文档"
+                panel.informativeText = parent.path + (directory ? "" : "\n不填扩展名时自动添加 .md。")
+                let input = NSTextField(string:directory ? "新文件夹" : "未命名.md")
+                input.frame = NSRect(x:0,y:0,width:320,height:24); panel.accessoryView = input
+                panel.addButton(withTitle:"创建"); panel.addButton(withTitle:"取消"); panel.window.initialFirstResponder = input
+                guard panel.runModal() == .alertFirstButtonReturn else { reply(id); return }
+                let created = try workspace.create(in:parent.path,name:input.stringValue,directory:directory)
+                updateWatches(force:true)
+                if directory { reply(id,["path":created.path,"name":created.lastPathComponent]) }
+                else {
+                    do { reply(id,try document(created)) }
+                    catch { reply(id,error:"文件已创建，但未能打开：" + error.localizedDescription) }
+                }
             case "listFolder":
                 guard let path = args.first as? String else { reply(id,error:"缺少文件夹路径"); return }
                 let result = try workspace.list(path); updateWatches(); reply(id,result)

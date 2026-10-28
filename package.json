@@ -1,6 +1,6 @@
 {
   "name": "rea-markdown",
-  "version": "0.11.0",
+  "version": "0.13.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -11,7 +11,8 @@
   },
   "dependencies": {
     "@milkdown/crepe": "7.22.3",
-    "@milkdown/kit": "7.22.3"
+    "@milkdown/kit": "7.22.3",
+    "remark-frontmatter": "5.0.0"
   },
   "devDependencies": {
     "vite": "8.3.5"

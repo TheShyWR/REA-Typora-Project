@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// Lists only the expanded directory; document access stays inside the selected root.
 final class Workspace {
@@ -40,6 +41,28 @@ final class Workspace {
             throw failure("请选择当前工作空间中的 Markdown 或文本文件。")
         }
         return url
+    }
+    func create(in parentPath: String, name: String, directory: Bool) throws -> URL {
+        let parent = try inside(parentPath)
+        let info = try parent.resourceValues(forKeys:keys)
+        guard info.isDirectory == true, info.isPackage != true else { throw failure("请选择普通工作空间目录。") }
+        guard !name.isEmpty, !name.hasPrefix("."), !name.contains("/"), !name.contains("\\"), !name.contains(":"),
+              name.rangeOfCharacter(from:.controlCharacters) == nil,
+              name == name.trimmingCharacters(in:.whitespacesAndNewlines) else { throw failure("请输入有效名称，不包含路径、隐藏前缀或首尾空白。") }
+        var filename = name
+        if directory {
+            guard !["app","bundle","framework","plugin"].contains((name as NSString).pathExtension.lowercased()) else { throw failure("不支持创建应用包目录。") }
+        } else {
+            if (name as NSString).pathExtension.isEmpty { filename += ".md" }
+            guard Self.extensions.contains((filename as NSString).pathExtension.lowercased()) else { throw failure("文档扩展名须为 .md、.markdown 或 .txt。") }
+        }
+        let target = parent.appendingPathComponent(filename,isDirectory:directory)
+        if directory {
+            guard Darwin.mkdir(target.path,0o755) == 0 else { throw failure("无法创建文件夹，可能同名项目已存在或目录不可写。") }
+        } else {
+            try Data().write(to:target,options:.withoutOverwriting)
+        }
+        return target
     }
     private func listing(_ directory: URL) throws -> [String:Any] {
         let info = try directory.resourceValues(forKeys:keys)

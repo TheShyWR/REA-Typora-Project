@@ -10,6 +10,7 @@ import { importImageFiles } from './image-import.js';
 import { imageSchema } from '@milkdown/kit/preset/commonmark';
 import { focusDecorations } from './focus.js';
 import { markdownProtection } from './safety.js';
+import { frontMatterNode, frontMatterRemark, frontMatterGuard, frontMatterPrefix, validFrontMatter, frontMatterError } from './front-matter.js';
 import { textMatches, documentMatches, replaceTextMatches, replaceDocumentMatches, searchKey, searchPlugin } from './search.js';
 import { closeHistory } from '@milkdown/kit/prose/history';
 import { Plugin, TextSelection } from '@milkdown/kit/prose/state';
@@ -68,6 +69,8 @@ crepe.editor.use($view(imageSchema.node, () => node => {
   update(node);
   return { dom, update };
 }));
+crepe.editor.use(frontMatterRemark).use(frontMatterNode);
+crepe.editor.use($prose(() => frontMatterGuard(message => { $('status').textContent = message; })));
 crepe.editor.use($prose(() => searchPlugin(renderSearch)));
 crepe.editor.use($prose(() => typewriterPlugin(document.querySelector('main'), () => !loading && !sourceMode && !composing && document.body.classList.contains('typewriter') && !document.body.classList.contains('exporting'))));
 await crepe.create();
@@ -124,7 +127,7 @@ function refresh(syncDraft = true) {
   $('count').textContent = `${raw.replace(/\s/g, '').length} 字符 · ${raw.split('\n').length} 行`;
   $('outline').replaceChildren();
   let fenced = false, index = 0;
-  for (const line of raw.split('\n')) {
+  for (const line of raw.slice(frontMatterPrefix(raw).length).split('\n')) {
     if (/^\s*(```|~~~)/.test(line)) fenced = !fenced;
     const match = !fenced && /^(#{1,6})\s+(.+)$/.exec(line);
     if (!match) continue;
@@ -201,12 +204,25 @@ async function action(kind, file) {
   if ($('preferences').open && !['preferences', 'closePreferences', 'resetPreferences'].includes(kind)) return;
   if (importing) { $('status').textContent = '图片正在导入，请稍后再操作'; return; }
   if (busy) return;
-  if (composing && ['source', 'new', 'open', 'save', 'saveAs', 'pdf', 'image', 'find', 'findNext', 'findPrevious', 'replace', 'replaceOne', 'replaceAll', 'rename', 'reload', 'workspaceSearch', 'openSearch', 'preferences', 'typewriter'].includes(kind)) {
+  if (composing && ['source', 'new', 'open', 'save', 'saveAs', 'pdf', 'image', 'find', 'findNext', 'findPrevious', 'replace', 'replaceOne', 'replaceAll', 'rename', 'reload', 'workspaceSearch', 'openSearch', 'preferences', 'typewriter', 'frontMatter', 'createDocument', 'createFolder'].includes(kind)) {
     $('status').textContent = '请先完成当前输入法候选字，再执行操作'; return;
   }
   busy = true;
   try {
     if (kind === 'source') await toggleSource();
+    else if (kind === 'frontMatter') {
+      if (sourceMode && !(await toggleSource())) return;
+      const view = editorView();
+      if (view.state.doc.firstChild?.type.name === 'front_matter') {
+        view.dispatch(view.state.tr.setSelection(TextSelection.create(view.state.doc, 1)).scrollIntoView().setMeta('addToHistory', false));
+      } else {
+        const node = view.state.schema.nodes.front_matter.create(null, view.state.schema.text('title: 无标题'));
+        const tr = view.state.tr.insert(0, node);
+        view.dispatch(closeHistory(tr).setSelection(TextSelection.create(tr.doc, 1 + node.content.size)).scrollIntoView());
+        view.dispatch(closeHistory(view.state.tr).setMeta('addToHistory', false));
+      }
+      view.focus(); $('status').textContent = '可编辑 YAML 元数据；⌘Enter 返回正文。元数据配置不会自动执行。';
+    }
     else if (kind === 'preferences') { $('settings-status').textContent = ''; $('preferences').showModal(); }
     else if (kind === 'closePreferences') $('preferences').close();
     else if (kind === 'resetPreferences') {
@@ -235,6 +251,14 @@ async function action(kind, file) {
     else if (kind === 'findNext' || kind === 'findPrevious') navigateSearch(kind === 'findNext' ? 1 : -1);
     else if (kind === 'replaceOne' || kind === 'replaceAll') replaceSearch(kind === 'replaceAll');
     else if (!api) $('status').textContent = '请通过桌面应用使用文件功能';
+    else if (kind === 'createDocument' || kind === 'createFolder') {
+      const created = await api[kind]();
+      if (!created) return;
+      if (kind === 'createDocument') await load(created);
+      await fileTree.refresh(true);
+      if (kind === 'createDocument') await fileTree.reveal();
+      $('status').textContent = kind === 'createDocument' ? '文档已创建并打开' : '文件夹已创建：' + created.name;
+    }
     else if (kind === 'new') await load(await api.new());
     else if (kind === 'open') await load(await api.open(file));
     else if (kind === 'openSearch') {
@@ -292,6 +316,7 @@ async function action(kind, file) {
     } else if (kind === 'refreshFolder') await fileTree.refresh();
     else if (kind === 'revealFile') await fileTree.reveal();
     else if (kind === 'pdf') {
+      if (frontMatterPrefix(raw)) { $('status').textContent = '含 YAML 元数据的 PDF 导出暂未支持，请先保存为 Markdown'; return; }
       if (sourceMode && !(await toggleSource())) { $('status').textContent = '源码保护文档暂不支持排版 PDF 导出'; return; }
       const focused = document.body.classList.contains('focus');
       if (focused) document.body.classList.toggle('focus');
@@ -314,7 +339,7 @@ function renderSearch() {
   if (loading) return;
   const { matches, index } = searchState();
   $('find-count').textContent = matches.length ? `${index + 1} / ${matches.length}` : '0 / 0';
-  $('find-scope').textContent = sourceMode ? '范围：Markdown 源码' : '范围：正文（不跨段落）';
+  $('find-scope').textContent = sourceMode ? '范围：Markdown 源码' : '范围：排版文本（含元数据，不跨段落）';
   for (const id of ['find-previous', 'find-next', 'replace-one', 'replace-all']) $(id).disabled = !matches.length;
 }
 function syncSearch() {
@@ -361,6 +386,7 @@ function replaceSearch(all) {
     sourceSearchIndex = all ? 0 : Math.max(0, remaining.findIndex(match => match.from >= end));
   } else {
     const view = editorView(), tr = replaceDocumentMatches(view.state, selected, replacement);
+    if (!validFrontMatter(tr.doc)) { $('status').textContent = frontMatterError; return; }
     const remaining = documentMatches(tr.doc, $('query').value, $('match-case').checked);
     const next = all ? 0 : Math.max(0, remaining.findIndex(match => match.from >= end));
     view.dispatch(closeHistory(tr).setMeta(searchKey, { index: next }));

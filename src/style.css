@@ -68,3 +68,11 @@
 .dark #preferences { background: #272d26; color: #d9dfd5; }
 .exporting.typewriter .milkdown .ProseMirror { padding-top: 65px; padding-bottom: 120px; }
 @media print { #preferences { display: none !important; } .typewriter .milkdown .ProseMirror { padding: 0; } }
+
+.milkdown .ProseMirror pre[data-rea-frontmatter] { background: #eff1eb; border: 1px solid #b5b9ae; border-radius: 7px; padding: 16px; margin-bottom: 28px; white-space: pre-wrap; overflow-wrap: anywhere; font: 14px/1.8 ui-monospace, Menlo, monospace; }
+.milkdown .ProseMirror pre[data-rea-frontmatter]::before { content: 'YAML Front Matter'; display: block; margin-bottom: 10px; color: #687760; font: 11px/1.5 -apple-system, sans-serif; letter-spacing: .5px; user-select: none; }
+.milkdown .ProseMirror pre[data-rea-frontmatter] code { font: inherit; background: transparent; color: inherit; padding: 0; }
+.dark .milkdown .ProseMirror pre[data-rea-frontmatter] { background: #293026; border-color: #53634c; }
+.dark .milkdown .ProseMirror pre[data-rea-frontmatter]::before { color: #b3bda9; }
+
+.workspace-create { display: flex; flex-wrap: wrap; margin-bottom: 6px; font-size: 11px; }
