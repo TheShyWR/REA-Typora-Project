@@ -13,13 +13,16 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
     let workspace = Workspace()
     let watcher = FileWatcher()
     let preferences = WritingPreferences()
+    let recent = RecentDocuments()
+    let recentMenu = NSMenu(title:"最近打开")
+    var recentWarning: String?
     let bridge = """
     (() => {
       let id = 0; const pending = new Map();
       window.__nativeReply = (id, value, error) => { const p = pending.get(id); if (!p) return; pending.delete(id); error ? p.reject(new Error(error)) : p.resolve(value); };
       const invoke = (method, ...args) => new Promise((resolve, reject) => { const key = ++id; pending.set(key, {resolve, reject}); window.webkit.messageHandlers.desktop.postMessage({id:key,method,args}); });
       window.desktop = {
-        new: () => invoke('new'), open: file => invoke('open', file || null),
+        new: () => invoke('new'), open: file => invoke('open', file || null), openRecent: path => invoke('openRecent',path),
         save: (text, saveAs, images) => invoke('save',text,!!saveAs,images || {sources:[],issue:''}), folder: () => invoke('folder'),
         listFolder: path => invoke('listFolder', path),
         createDocument: () => invoke('createDocument'), createFolder: () => invoke('createFolder'),
@@ -82,12 +85,41 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
         }
         section("REA Markdown", [("关于 REA Markdown","about",""),("写作设置…","preferences",","),("退出 REA Markdown","quit","q")])
         section("文件", [("新建","new","n"),("打开…","open","o"),("保存","save","s"),("另存为…","saveAs",""),("打开文件夹…","folder",""),("在工作空间新建文档…","createDocument",""),("在工作空间新建文件夹…","createFolder",""),("刷新目录","refreshFolder",""),("定位当前文件","revealFile",""),("重命名当前文件…","rename",""),("插入图片…","image",""),("插入 YAML 元数据","frontMatter",""),("导出 PDF…","pdf","")])
+        let recentItem = NSMenuItem(title:"最近打开",action:nil,keyEquivalent:""); recentItem.submenu = recentMenu
+        menu.items.first(where:{ $0.submenu?.title == "文件" })?.submenu?.insertItem(recentItem,at:2)
+        refreshRecentMenu()
         let edit = NSMenuItem(); let editMenu = NSMenu(title:"编辑"); edit.submenu = editMenu; menu.addItem(edit)
         for (title, selector, key) in [("撤销","undo:","z"),("重做","redo:","Z"),("剪切","cut:","x"),("复制","copy:","c"),("粘贴","paste:","v"),("全选","selectAll:","a")] {
             editMenu.addItem(withTitle:title, action:Selector(selector), keyEquivalent:key)
         }
         section("视图",[("源码模式","source","/"),("查找","find","f"),("查找下一个","findNext","g"),("查找上一个","findPrevious","G"),("查找与替换","replace",""),("搜索工作空间…","workspaceSearch","F"),("专注模式","focus",""),("打字机模式","typewriter",""),("切换主题","theme","")])
         NSApp.mainMenu = menu
+    }
+    func refreshRecentMenu() {
+        recentMenu.removeAllItems()
+        for url in recent.urls {
+            let item = NSMenuItem(title:url.lastPathComponent + " — " + url.deletingLastPathComponent().lastPathComponent,action:#selector(openRecentDocument(_:)),keyEquivalent:"")
+            item.target = self; item.representedObject = url.path; item.toolTip = url.path; recentMenu.addItem(item)
+        }
+        if recent.urls.isEmpty {
+            let empty = NSMenuItem(title:"暂无最近文档",action:nil,keyEquivalent:""); empty.isEnabled = false; recentMenu.addItem(empty)
+        } else {
+            recentMenu.addItem(.separator())
+            let clear = NSMenuItem(title:"清空最近记录",action:#selector(clearRecentDocuments),keyEquivalent:"")
+            clear.target = self; recentMenu.addItem(clear)
+        }
+    }
+    func remember(_ url: URL, replacing old: URL? = nil) {
+        do { try recent.record(url,replacing:old); recentWarning = nil; refreshRecentMenu() }
+        catch { recentWarning = "文档操作已完成，但最近记录保存失败：" + error.localizedDescription }
+    }
+    @objc func openRecentDocument(_ sender: NSMenuItem) {
+        guard let path = sender.representedObject as? String else { return }
+        web.evaluateJavaScript("window.__nativeAction?.('openRecent',\(json(path)))")
+    }
+    @objc func clearRecentDocuments() {
+        do { try recent.clear(); recentWarning = nil; refreshRecentMenu() }
+        catch { show(error) }
     }
     @objc func menuAction(_ sender: NSMenuItem) {
         let action = sender.representedObject as! String
@@ -121,11 +153,12 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
     func payload(_ text: String) -> [String: String] {
         var result = ["name":current?.lastPathComponent ?? "未命名.md", "text":text, "savedText":store.savedText, "imageToken":images.token]
         if let current { result["path"] = current.path }
+        if let recentWarning { result["recentWarning"] = recentWarning }
         return result
     }
     func document(_ url: URL) throws -> [String: String] {
         let text = try store.open(url)
-        images.setDocument(url); updateWatches()
+        images.setDocument(url); updateWatches(); remember(url)
         dirty = false; window.isDocumentEdited = false; window.title = url.lastPathComponent
         return payload(text)
     }
@@ -187,7 +220,11 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
                 if dirty { try store.checkpoint(text) } else { try store.clearRecovery() }
                 reply(id)
             case "new":
-                guard mayDiscard() else { reply(id); return }; try store.new(); images.setDocument(nil); updateWatches(); dirty = false; window.isDocumentEdited = false; window.title = "未命名.md"; reply(id,payload(""))
+                guard mayDiscard() else { reply(id); return }; try store.new(); recentWarning = nil; images.setDocument(nil); updateWatches(); dirty = false; window.isDocumentEdited = false; window.title = "未命名.md"; reply(id,payload(""))
+            case "openRecent":
+                guard let path = args.first as? String, recent.contains(path) else { reply(id,error:"该文档已不在最近记录中。"); return }
+                guard mayDiscard() else { reply(id); return }
+                reply(id,try document(URL(fileURLWithPath:path)))
             case "open", "openSearch":
                 guard mayDiscard() else { reply(id); return }
                 var url: URL?
@@ -218,6 +255,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
                 } else {
                     status = try store.save(text,to:url) ?? (changedDirectory && (!sources.isEmpty || !issue.isEmpty) ? "已另存文档，未复制图片，请核对相对链接" : "已保存")
                 }
+                remember(url)
                 if images.document != current { images.setDocument(current) }
                 updateWatches(force:true); dirty = false; window.isDocumentEdited = false; window.title = url.lastPathComponent
                 var result = payload(text); result["saveStatus"] = status; reply(id,result)
@@ -283,6 +321,7 @@ final class EditorApp: NSObject, NSApplicationDelegate, WKScriptMessageHandler, 
                 panel.window.initialFirstResponder = input
                 guard panel.runModal() == .alertFirstButtonReturn else { reply(id); return }
                 let renamed = try store.rename(input.stringValue)
+                remember(renamed,replacing:current)
                 images.setDocument(renamed); updateWatches(force:true); window.title = renamed.lastPathComponent
                 reply(id,payload(store.savedText))
             case "pdf":

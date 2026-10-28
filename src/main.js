@@ -168,7 +168,7 @@ async function load(doc) {
   $('source').value = raw;
   if (protectedSource) sourceMode = true;
   showMode(); loading = false; refresh();
-  $('status').textContent = raw !== saved ? '已恢复未保存内容，请检查后保存' : (protectedSource ? '已载入 · 源码保护' : '已载入');
+  $('status').textContent = (raw !== saved ? '已恢复未保存内容，请检查后保存' : (protectedSource ? '已载入 · 源码保护' : '已载入')) + (doc.recentWarning ? '；' + doc.recentWarning : '');
 }
 async function toggleSource() {
   if (sourceMode) {
@@ -204,7 +204,7 @@ async function action(kind, file) {
   if ($('preferences').open && !['preferences', 'closePreferences', 'resetPreferences'].includes(kind)) return;
   if (importing) { $('status').textContent = '图片正在导入，请稍后再操作'; return; }
   if (busy) return;
-  if (composing && ['source', 'new', 'open', 'save', 'saveAs', 'pdf', 'image', 'find', 'findNext', 'findPrevious', 'replace', 'replaceOne', 'replaceAll', 'rename', 'reload', 'workspaceSearch', 'openSearch', 'preferences', 'typewriter', 'frontMatter', 'createDocument', 'createFolder'].includes(kind)) {
+  if (composing && ['source', 'new', 'open', 'save', 'saveAs', 'pdf', 'image', 'find', 'findNext', 'findPrevious', 'replace', 'replaceOne', 'replaceAll', 'rename', 'reload', 'workspaceSearch', 'openSearch', 'preferences', 'typewriter', 'frontMatter', 'createDocument', 'createFolder', 'openRecent'].includes(kind)) {
     $('status').textContent = '请先完成当前输入法候选字，再执行操作'; return;
   }
   busy = true;
@@ -257,10 +257,11 @@ async function action(kind, file) {
       if (kind === 'createDocument') await load(created);
       await fileTree.refresh(true);
       if (kind === 'createDocument') await fileTree.reveal();
-      $('status').textContent = kind === 'createDocument' ? '文档已创建并打开' : '文件夹已创建：' + created.name;
+      $('status').textContent = (kind === 'createDocument' ? '文档已创建并打开' : '文件夹已创建：' + created.name) + (created.recentWarning ? '；' + created.recentWarning : '');
     }
     else if (kind === 'new') await load(await api.new());
     else if (kind === 'open') await load(await api.open(file));
+    else if (kind === 'openRecent') await load(await api.openRecent(file));
     else if (kind === 'openSearch') {
       const doc = await api.openSearch(file.path);
       if (!doc) return;
@@ -270,7 +271,7 @@ async function action(kind, file) {
       $('source').focus(); $('source').setSelectionRange(file.from, file.to);
       const lineHeight = parseFloat(getComputedStyle($('source')).lineHeight);
       $('source').scrollTop = Math.max(0, (file.line - 3) * lineHeight);
-      $('status').textContent = `已定位到源码第 ${file.line} 行`;
+      $('status').textContent = `已定位到源码第 ${file.line} 行` + (doc.recentWarning ? '；' + doc.recentWarning : '');
     }
     else if (kind === 'reload') await load(await api.reload(currentPath));
     else if (kind === 'rename') {
@@ -280,7 +281,7 @@ async function action(kind, file) {
         documentRevision++; currentPath = result.path; name = result.name; imageToken = result.imageToken;
         fileTree.setActive(currentPath); $('external-change').hidden = true;
         document.querySelectorAll('#editor img[data-rea-src]').forEach(img => { img.src = imageURL(img.dataset.reaSrc, imageToken); });
-        refresh(); await fileTree.refresh(true); $('status').textContent = '文件已重命名，现有图片链接保持不变';
+        refresh(); await fileTree.refresh(true); $('status').textContent = '文件已重命名，现有图片链接保持不变' + (result.recentWarning ? '；' + result.recentWarning : '');
       }
     }
     else if (kind === 'save' || kind === 'saveAs') {
@@ -292,7 +293,7 @@ async function action(kind, file) {
         name = result.name; saved = snapshot; imageToken = result.imageToken; fileTree.setActive(result.path);
         document.querySelectorAll('#editor img[data-rea-src]').forEach(img => { img.src = imageURL(img.dataset.reaSrc, imageToken); });
         // Native save already cleared the draft; only resync if newer edits arrived.
-        refresh(raw !== saved); $('status').textContent = result.saveStatus || '已保存';
+        refresh(raw !== saved); $('status').textContent = (result.saveStatus || '已保存') + (result.recentWarning ? '；' + result.recentWarning : '');
       }
     } else if (kind === 'image') {
       const image = await api.pickImage();
